@@ -7,7 +7,6 @@ import time
 import pickle
 
 DATA_PATH = '/data/antonio/img_align_celeba/'
-torch.cuda.set_device(1)
 def save_obj(obj, name ):
     with open('obj/'+ name + '.pkl', 'wb') as f:
         pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
