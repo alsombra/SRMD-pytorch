@@ -4,6 +4,8 @@ __pycache__/
 .nsmlignore
 .DS_Store
 logs/
+results/
+samples/
 models/
 results/
 database/

@@ -8,6 +8,7 @@ import numpy as np
 from data_loader import Scaling
 from utils import Kernels, load_kernels
 from PIL import Image,ImageDraw
+import os
 
 torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
@@ -16,7 +17,8 @@ class Solver(object):
     def __init__(self, data_loader, config):
         # Data loader
         self.data_loader = data_loader
-
+        self.data_iter = iter(self.data_loader)
+        
         # Model hyper-parameters
         self.num_blocks = config.num_blocks  # num_blocks = 11
         self.num_channels = config.num_channels  # num_channels = 18
@@ -26,6 +28,7 @@ class Solver(object):
         # Training settings
         self.total_step = config.total_step # 20000
         self.lr = config.lr 
+        self.loss_function = config.loss_function
         self.beta1 = config.beta1 # 0.5  ????????????????? testar 0.9 ou 0.001
         self.beta2 = config.beta2 # 0.99  ???????????????
         self.trained_model = config.trained_model
@@ -33,9 +36,11 @@ class Solver(object):
         self.start_step = -1
 
         #Test settings
-        self.use_test_set = config.use_test_set
+        self.test_mode = config.test_mode
         self.test_image_path = config.test_image_path
-        
+        self.evaluation_step = config.evaluation_step
+        self.evaluation_size = config.evaluation_size
+
         # Path and step size
         self.log_path = config.log_path
         self.result_path = config.result_path
@@ -139,12 +144,16 @@ class Solver(object):
         grid = (255 * tmp).astype(np.uint8)
         return grid
     
-    def img_add_info(self, img, epoch, loss):
+    def img_add_info(self, img_paths, img, epoch, loss):
         'receives tensor as img'
         added_text = Image.new('RGB', (500, img.shape[0]), color = 'white')
         d = ImageDraw.Draw(added_text)
-        d.text((10,10), "model trained for {} epochs, loss (comparing residuals): {:.4f}".format(epoch, loss.item()), fill='black')
+        d.text((10,10), "model trained for {} epochs, loss (comparing residuals): {:.4f}".format(epoch, loss.item()) + \
+               "\n" + '\n'.join([os.path.basename(path) for path in img_paths]), fill='black')
         imgs_comb = np.hstack((np.array(img), added_text))
+        
+        d.text((10,10), "model trained for {} epochs, loss (comparing residuals): {:.4f}".format(epoch, loss.item()), fill='black')
+        
         imgs_comb = Image.fromarray(imgs_comb)
         return imgs_comb    
     
@@ -152,7 +161,10 @@ class Solver(object):
         self.model.train()
 
         # Reconst loss
-        reconst_loss = nn.MSELoss()
+        if self.loss_function == 'l1':
+            reconst_loss = nn.L1Loss()
+        elif self.loss_function == 'l2':
+            reconst_loss = nn.MSELoss()
 
         # Data iter
         data_iter = iter(self.data_loader)
@@ -168,7 +180,7 @@ class Solver(object):
             if (step+1) % iter_per_epoch == 0: 
                 data_iter = iter(self.data_loader)
 
-            x, y = next(data_iter)
+            img_paths, x, y = next(data_iter)
             lr_image = x[:,:3,:,:]
             hr_image = y
             lr_image,hr_image, x, y = lr_image.to(self.device), hr_image.to(self.device), x.to(self.device), y.to(self.device)
@@ -199,7 +211,7 @@ class Solver(object):
                     return x.data.cpu().numpy()
                 
                 tmp = self.create_grid(lr_image,hr_image, reconst)
-                imgs_comb = self.img_add_info(tmp, step+1, loss)                
+                imgs_comb = self.img_add_info(img_paths, tmp, step+1, loss)                
                 #from IPython.display import display
                 grid_PIL = imgs_comb
                 grid_PIL.save('./samples/test_{}.jpg'.format(step + 1))
@@ -215,7 +227,7 @@ class Solver(object):
                     
             # Save check points
             if (step+1) % self.model_save_step == 0:                
-                self.save(step, loss.item(), os.path.join(self.model_save_path, '{}.pth.tar'.format(str(step))))
+                self.save(step+1, loss.item(), os.path.join(self.model_save_path, '{}.pth.tar'.format(self.loss_function.upper() + '_' + str(step+1))))
 
     def save(self, step, current_loss, filename):
         model = self.model.state_dict()
@@ -234,8 +246,7 @@ class Solver(object):
         reconst_loss = nn.MSELoss()
 
             # Data iter
-        data_iter = iter(self.data_loader)
-        x, y = next(data_iter)
+        img_paths, x, y = next(self.data_iter)
         lr_image = x[:,:3,:,:]
         hr_image = y
         lr_image,hr_image, x, y = lr_image.to(self.device), hr_image.to(self.device), x.to(self.device), y.to(self.device)
@@ -249,23 +260,39 @@ class Solver(object):
         print("model trained for {} epochs, loss: {:.4f}".format(epoch, loss.item()))
         
         tmp = self.create_grid(lr_image, hr_image, reconst)
-        grid_PIL = self.img_add_info(tmp, epoch, loss)  
-        
-        hr_bic, hr_hat, hr = self.get_trio_images(lr_image,hr_image, reconst)
-        
-        lr_image_np = lr_image.data.cpu().numpy().transpose(0,2,3,1)*255
-        lr_image_np = Image.fromarray(np.squeeze(lr_image_np).astype(np.uint8))
-
+        grid_PIL = self.img_add_info(img_paths, tmp, epoch, loss)  
+         #from IPython.display import display
         random_number = np.random.rand(1)[0]
-                            
-        lr_image_np.save('./results/LR_images_snapshot/{:.3f}_lr_{}.png'.format(random_number, self.start_step + 1))
-        hr_bic.save('./results/HR_bicub_images/{:.3f}_hr_bic_{}.png'.format(random_number, self.start_step + 1))
-        hr_hat.save('./results/HR_HAT_images/{:.3f}_hr_hat_{}.png'.format(random_number, self.start_step + 1))
-        hr.save('./results/HR_images/{:.3f}_hr_{}.png'.format(random_number, self.start_step + 1))
-        
-        #from IPython.display import display
-        grid_PIL.save('./results/grids/{:.3f}_grid_{}.png'.format(random_number, self.start_step + 1))
+        if self.data_loader.batch_size != 1:
+            grid_PIL.save('./results/grids/{:.3f}_grid_{}.png'.format(random_number, self.start_step + 1))
+        elif self.data_loader.batch_size == 1: #only saves separate images if batch == 1
+            
+            grid_PIL.save('./results/grids/'+ os.path.basename(img_paths[0])+'_grid_{}.png'.format(self.start_step + 1))
 
+            hr_bic, hr_hat, hr = self.get_trio_images(lr_image,hr_image, reconst)
+
+            lr_image_np = lr_image.data.cpu().numpy().transpose(0,2,3,1)*255
+            lr_image_np = Image.fromarray(np.squeeze(lr_image_np).astype(np.uint8))
+
+            lr_image_np.save('./results/LR_images_snapshot/'+ os.path.basename(img_paths[0])+'_lr_{}.png'.format(self.start_step + 1))
+            hr_bic.save('./results/HR_bicub_images/'+ os.path.basename(img_paths[0])+'_hr_bic_{}.png'.format(self.start_step + 1))
+            hr_hat.save('./results/HR_HAT_images/'+ os.path.basename(img_paths[0])+'_hr_hat_{}.png'.format(self.start_step + 1))
+            hr.save('./results/HR_images/'+ os.path.basename(img_paths[0])+'_hr_{}.png'.format(self.start_step + 1))
+
+    def evaluate(self):
+        if self.evaluation_size == -1:
+            self.evaluation_size = len(self.data_loader)
+            
+        if self.data_loader.batch_size != 1:
+            print('WAIT! PASS --batch_size = 1 to do this first. Your batch_size is not 1')
+            pass
+        for step in range(self.evaluation_size):
+            if (step+1) % self.evaluation_step == 0:
+                [print() for i in range(10)]
+                print("[{}/{}] tests".format(step+1, len(self.data_loader)))
+                [print() for i in range(10)]
+            self.model.eval() 
+            self.test_and_error();
 
     def test(self): #receives single image --> can be easily modified to handle multiple images        
         'Takes single LR image as input. Returns LR image + (models approx) HR image concatenated'
@@ -321,8 +348,8 @@ class Solver(object):
 
         #Saving Image Bicubic and HR Image Hat
         random_number = np.random.rand(1)[0]
-        Image.fromarray(image_hr_bicubic_single).save('./results/HR_bicub_images/{:.3f}_hr_bic_{}.png'.format(random_number, 1))
-        Image.fromarray(hr_image_hat_np_png).save('./results/HR_HAT_images/{:.3f}_hr_hat_{}.png'.format(random_number, 1))
+        Image.fromarray(image_hr_bicubic_single).save('./results/HR_bicub_images/'+ os.path.basename(self.test_image_path)+'_hr_bic_{}.png'.format(step))
+        Image.fromarray(hr_image_hat_np_png).save('./results/HR_HAT_images/'+ os.path.basename(self.test_image_path)+'_hr_hat_{}.png'.format(step))
 
         #Create Grid
         hr_image_hat_np_scaled = hr_image_hat_np #It's already scaled (comes out of model scaled)
@@ -333,4 +360,16 @@ class Solver(object):
         grid = make_grid(pairs, 1) 
         tmp = np.squeeze(grid.cpu().numpy().transpose((1, 2, 0)))
         tmp = (255 * tmp).astype(np.uint8)
-        Image.fromarray(tmp).save('./results/grids/{:.3f}_grid_{}.png'.format(random_number, 1))
+        Image.fromarray(tmp).save('./results/grids/'+ os.path.basename(self.test_image_path).split('.')[0]+'_grid_{}.png'.format(step))
+        
+    def many_tests(self):
+        import glob
+        TYPES = ('*.png', '*.jpg', '*.jpeg', '*.bmp')
+        image_paths = []
+        root = self.test_image_path
+        for ext in TYPES:
+            image_paths.extend(glob.glob(os.path.join(root, ext)))
+        for img_path in image_paths:
+            self.test_image_path = img_path
+            self.test()
+
