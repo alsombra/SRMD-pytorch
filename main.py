@@ -5,7 +5,7 @@ import os
 from solver import Solver
 import time
 import pickle
-
+torch.cuda.set_device(1)
 DATA_PATH = '/data/antonio/img_align_celeba/'
 def save_obj(obj, name ):
     with open('obj/'+ name + '.pkl', 'wb') as f:
